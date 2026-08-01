@@ -57,6 +57,27 @@ class WorkOrderCreate(BaseModel):
     engineer_id: int
 
 
+class WorkOrderUpdate(BaseModel):
+    customer_name: str
+    device_name: str
+    sn_code: Optional[str] = None
+    address: Optional[str] = None
+    fault_type: str
+    fault_desc: str
+    engineer_id: int
+    status: Optional[str] = None
+
+
+class LocationPoint(BaseModel):
+    label: Optional[str] = None
+    longitude: float
+    latitude: float
+
+
+class ReverseGeocodeRequest(BaseModel):
+    point: LocationPoint
+
+
 class WorkOrderOut(BaseModel):
     id: int
     order_no: str

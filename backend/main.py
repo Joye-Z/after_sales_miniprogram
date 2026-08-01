@@ -2,6 +2,9 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
@@ -17,12 +20,14 @@ from crud import (
     create_work_order,
     create_work_record,
     delete_engineer,
+    delete_work_order,
     get_engineers,
     get_user_by_username,
     get_work_order,
     get_work_orders,
     get_work_orders_by_engineer,
     update_engineer,
+    update_work_order,
     update_work_order_status,
 )
 from database import Base, engine, get_db
@@ -31,9 +36,11 @@ from schemas import (
     EngineerCreate,
     LoginRequest,
     LoginResponse,
+    ReverseGeocodeRequest,
     WorkOrderCreate,
     WorkOrderList,
     WorkOrderOut,
+    WorkOrderUpdate,
     WorkRecordCreate,
 )
 
@@ -41,6 +48,8 @@ APP_TITLE = os.getenv("APP_TITLE", "After-sales Service API")
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+AMAP_WEB_SERVICE_KEY = os.getenv("AMAP_WEB_SERVICE_KEY", "").strip()
+AMAP_TIMEOUT_SECONDS = int(os.getenv("AMAP_TIMEOUT_SECONDS", "15"))
 DEFAULT_CORS_ORIGINS = "http://127.0.0.1:8001,http://localhost:8001"
 CORS_ORIGINS = [
     origin.strip()
@@ -174,6 +183,7 @@ def health() -> dict:
         "time": datetime.now(timezone.utc).isoformat(),
         "web_enabled": os.path.isdir(WEB_DIR),
         "web_mount_path": WEB_MOUNT_PATH,
+        "location_mode": "AMAP_LIVE" if AMAP_WEB_SERVICE_KEY else "NOT_CONFIGURED",
     }
 
 
@@ -310,6 +320,62 @@ def enrich_order(order: WorkOrder) -> dict:
     return data
 
 
+def fetch_amap_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"User-Agent": "after-sales-miniprogram/1.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=AMAP_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail="高德位置服务暂时不可用，请稍后重试") from exc
+
+
+@app.post("/api/locations/reverse-geocode")
+def reverse_geocode_location(
+    data: ReverseGeocodeRequest,
+    current_user: User = Depends(get_current_user),
+):
+    if not AMAP_WEB_SERVICE_KEY:
+        raise HTTPException(status_code=503, detail="未配置高德 Web 服务 Key")
+
+    point = data.point
+    if not -180 <= point.longitude <= 180 or not -90 <= point.latitude <= 90:
+        raise HTTPException(status_code=400, detail="经纬度超出有效范围")
+
+    params = urllib.parse.urlencode(
+        {
+            "key": AMAP_WEB_SERVICE_KEY,
+            "location": f"{point.longitude:.6f},{point.latitude:.6f}",
+            "radius": "300",
+            "extensions": "all",
+            "homeorcorp": "2",
+            "output": "json",
+        }
+    )
+    payload = fetch_amap_json(f"https://restapi.amap.com/v3/geocode/regeo?{params}")
+    regeocode = payload.get("regeocode") or {}
+    formatted_address = str(regeocode.get("formatted_address") or "").strip()
+    if str(payload.get("status")) != "1" or not formatted_address:
+        message = payload.get("info") or "没有找到当前位置地址"
+        raise HTTPException(status_code=502, detail=f"高德位置解析失败：{message}")
+
+    pois = regeocode.get("pois") or []
+    nearest_poi = pois[0] if pois else {}
+    component = regeocode.get("addressComponent") or {}
+    return {
+        "result": {
+            "source": "AMAP_LIVE",
+            "placeName": str(nearest_poi.get("name") or formatted_address).strip(),
+            "formattedAddress": formatted_address,
+            "longitude": point.longitude,
+            "latitude": point.latitude,
+            "province": str(component.get("province") or ""),
+            "city": str(component.get("city") or ""),
+            "district": str(component.get("district") or ""),
+            "nearestPoiDistance": str(nearest_poi.get("distance") or ""),
+        }
+    }
+
+
 @app.get("/workorders", response_model=WorkOrderList)
 def list_work_orders(
     skip: int = 0,
@@ -351,6 +417,35 @@ def add_work_order(
         raise HTTPException(status_code=403, detail="无权创建工单")
     order = create_work_order(db, data, current_user.id)
     return enrich_order(order)
+
+
+@app.put("/workorders/{order_id}")
+def edit_work_order(
+    order_id: int,
+    data: WorkOrderUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "paidan":
+        raise HTTPException(status_code=403, detail="No permission to update work order")
+    order = update_work_order(db, order_id, data)
+    if not order:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    return enrich_order(order)
+
+
+@app.delete("/workorders/{order_id}")
+def remove_work_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != "paidan":
+        raise HTTPException(status_code=403, detail="No permission to delete work order")
+    order = delete_work_order(db, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Work order not found")
+    return {"ok": True}
 
 
 @app.get("/workorders/me/tasks")

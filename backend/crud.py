@@ -60,6 +60,8 @@ def create_engineer(db: Session, data):
 def delete_engineer(db: Session, engineer_id: int):
     engineer = db.query(Engineer).filter(Engineer.id == engineer_id).first()
     if engineer:
+        if engineer.user:
+            db.delete(engineer.user)
         db.delete(engineer)
         db.commit()
     return engineer
@@ -73,6 +75,8 @@ def update_engineer(db: Session, engineer_id: int, data):
         val = getattr(data, field, None)
         if val is not None:
             setattr(engineer, field, val)
+            if engineer.user and field in ("name", "phone"):
+                setattr(engineer.user, field, val)
     db.commit()
     db.refresh(engineer)
     return engineer
@@ -109,6 +113,35 @@ def get_work_orders(db: Session):
 
 def get_work_order(db: Session, order_id: int):
     return db.query(WorkOrder).filter(WorkOrder.id == order_id).first()
+
+
+def update_work_order(db: Session, order_id: int, data):
+    order = db.query(WorkOrder).filter(WorkOrder.id == order_id).first()
+    if not order:
+        return None
+
+    for field in ("customer_name", "device_name", "sn_code", "address", "fault_type", "fault_desc", "engineer_id"):
+        setattr(order, field, getattr(data, field))
+
+    if getattr(data, "status", None):
+        order.status = data.status
+
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+def delete_work_order(db: Session, order_id: int):
+    order = db.query(WorkOrder).filter(WorkOrder.id == order_id).first()
+    if not order:
+        return None
+
+    records = db.query(WorkRecord).filter(WorkRecord.work_order_id == order_id).all()
+    for record in records:
+        db.delete(record)
+    db.delete(order)
+    db.commit()
+    return order
 
 
 def get_work_orders_by_engineer(db: Session, engineer_id: int, status: str = None):
