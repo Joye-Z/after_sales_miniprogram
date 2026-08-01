@@ -1,44 +1,41 @@
-const appRoot = document.getElementById("app");
-const storageKeys = {
+const root = document.getElementById("app");
+
+const KEYS = {
   token: "aftersales_token",
   role: "aftersales_role",
   user: "aftersales_user",
 };
 
 const state = {
-  token: localStorage.getItem(storageKeys.token) || "",
-  role: localStorage.getItem(storageKeys.role) || "",
-  user: loadJson(storageKeys.user, null),
-  engineers: [],
+  token: localStorage.getItem(KEYS.token) || "",
+  role: localStorage.getItem(KEYS.role) || "",
+  user: readJson(KEYS.user, null),
   orders: [],
+  orderStats: {},
+  engineers: [],
   taskOrders: [],
   historyOrders: [],
   profile: null,
-  modalOrderId: null,
-  pending: false,
-  error: "",
-  orderStats: {},
+  detailOrder: null,
+  loginError: "",
+  loading: false,
 };
 
 const faultTypes = ["机械故障", "电气控制故障", "液压/气动泄漏", "软件/程序异常", "其他故障"];
 const paidanTabs = [
-  { key: "create", label: "新建工单" },
-  { key: "orders", label: "工单列表" },
-  { key: "engineers", label: "工程师" },
-  { key: "mine", label: "我的" },
+  { key: "create", text: "派单", icon: "create" },
+  { key: "orders", text: "工单", icon: "orders" },
+  { key: "engineers", text: "工程师", icon: "engineers" },
+  { key: "mine", text: "我的", icon: "mine" },
 ];
 const engineerTabs = [
-  { key: "tasks", label: "待处理" },
-  { key: "working", label: "维修上报" },
-  { key: "history", label: "历史记录" },
-  { key: "mine", label: "我的" },
-];
-const demoAccounts = [
-  { role: "paidan", username: "PD001", password: "123456", label: "派单员" },
-  { role: "engineer", username: "SH001", password: "123456", label: "工程师" },
+  { key: "tasks", text: "任务", icon: "tasks" },
+  { key: "working", text: "维修", icon: "working" },
+  { key: "history", text: "历史", icon: "history" },
+  { key: "mine", text: "我的", icon: "mine" },
 ];
 
-function loadJson(key, fallback) {
+function readJson(key, fallback) {
   try {
     const value = localStorage.getItem(key);
     return value ? JSON.parse(value) : fallback;
@@ -48,46 +45,31 @@ function loadJson(key, fallback) {
 }
 
 function saveSession(payload) {
-  localStorage.setItem(storageKeys.token, payload.access_token);
-  localStorage.setItem(storageKeys.role, payload.role);
-  localStorage.setItem(storageKeys.user, JSON.stringify(payload.user));
+  localStorage.setItem(KEYS.token, payload.access_token);
+  localStorage.setItem(KEYS.role, payload.role);
+  localStorage.setItem(KEYS.user, JSON.stringify(payload.user));
   state.token = payload.access_token;
   state.role = payload.role;
   state.user = payload.user;
-  state.pending = false;
 }
 
 function clearSession() {
-  Object.values(storageKeys).forEach((key) => localStorage.removeItem(key));
+  Object.values(KEYS).forEach((key) => localStorage.removeItem(key));
   state.token = "";
   state.role = "";
   state.user = null;
-  state.engineers = [];
   state.orders = [];
+  state.orderStats = {};
+  state.engineers = [];
   state.taskOrders = [];
   state.historyOrders = [];
   state.profile = null;
-  state.modalOrderId = null;
-  state.pending = false;
-  setHash("login");
+  state.detailOrder = null;
+  state.loginError = "";
+  setRoute("login");
 }
 
-function getHashRoute() {
-  const raw = window.location.hash.replace(/^#\/?/, "");
-  return raw || "login";
-}
-
-function setHash(route) {
-  const target = `#/${route}`;
-  if (window.location.hash !== target) {
-    window.location.hash = target;
-  } else {
-    render();
-  }
-}
-
-function getApiBase() {
-  if (window.AFTERSALES_API_BASE) return window.AFTERSALES_API_BASE;
+function apiBase() {
   return window.location.origin;
 }
 
@@ -95,84 +77,93 @@ async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
   if (!(options.body instanceof FormData)) headers["Content-Type"] = "application/json";
-
-  const response = await fetch(`${getApiBase()}${path}`, {
+  const response = await fetch(`${apiBase()}${path}`, {
     method: options.method || "GET",
     headers,
     body: options.body instanceof FormData ? options.body : options.body ? JSON.stringify(options.body) : undefined,
   });
-
   if (response.status === 401) {
     clearSession();
-    throw new Error("登录已失效，请重新登录");
+    throw new Error("登录已失效");
   }
-
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json() : await response.text();
-  if (!response.ok) {
-    throw new Error(payload.detail || payload.message || "请求失败");
-  }
+  if (!response.ok) throw new Error(payload.detail || payload.message || "请求失败");
   return payload;
 }
 
-function pad(value) {
-  return String(value).padStart(2, "0");
+function route() {
+  return window.location.hash.replace(/^#\/?/, "") || "login";
 }
 
-function formatDate(value) {
+function setRoute(value) {
+  const target = `#/${value}`;
+  if (window.location.hash !== target) {
+    window.location.hash = target;
+  } else {
+    render();
+  }
+}
+
+function currentTab() {
+  const current = route();
+  if (!state.role) return "login";
+  if (current === "login") return state.role === "paidan" ? "create" : "tasks";
+  return current;
+}
+
+function esc(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function statusMeta(status) {
+  return {
+    pending: { text: "待处理", cls: "badge-pending" },
+    assigned: { text: "已指派", cls: "badge-processing" },
+    processing: { text: "处理中", cls: "badge-processing" },
+    done: { text: "已完成", cls: "badge-done" },
+  }[status] || { text: status, cls: "badge-processing" };
+}
+
+function formatTime(value) {
   if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-function currentDateTime() {
-  const now = new Date();
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+function nowLocalDateTime() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 function durationText(minutes) {
   if (!minutes && minutes !== 0) return "-";
   if (minutes >= 60) {
-    const hours = Math.floor(minutes / 60);
-    const rest = minutes % 60;
-    return `${hours}小时${rest ? `${rest}分钟` : ""}`;
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return `${h}小时${m ? `${m}分钟` : ""}`;
   }
   return `${minutes}分钟`;
 }
 
-function statusMeta(status) {
-  return {
-    pending: { text: "待处理", className: "pending" },
-    assigned: { text: "已指派", className: "processing" },
-    processing: { text: "处理中", className: "processing" },
-    done: { text: "已完成", className: "done" },
-  }[status] || { text: status, className: "processing" };
+function orderById(id) {
+  return [...state.orders, ...state.taskOrders, ...state.historyOrders].find((item) => item.id === id) || null;
 }
 
-function normalizeImage(url) {
-  if (!url) return "";
-  if (/^https?:\/\//.test(url)) return url;
-  return `${getApiBase()}${url}`;
-}
-
-function getActiveTab() {
-  const route = getHashRoute();
-  if (!state.role) return "login";
-  if (route === "login") return state.role === "paidan" ? "create" : "tasks";
-  return route;
-}
-
-function getModalOrder() {
-  return [...state.orders, ...state.taskOrders, ...state.historyOrders].find((item) => item.id === state.modalOrderId) || null;
-}
-
-async function refreshData() {
+async function refreshAll() {
   if (!state.token || !state.role) return;
   if (state.role === "paidan") {
-    const [ordersData, engineers] = await Promise.all([api("/workorders"), api("/engineers")]);
-    state.orders = ordersData.items || [];
-    state.orderStats = ordersData.stats || {};
+    const [orders, engineers] = await Promise.all([api("/workorders"), api("/engineers")]);
+    state.orders = orders.items || [];
+    state.orderStats = orders.stats || {};
     state.engineers = engineers || [];
   } else {
     const [tasks, history, profile] = await Promise.all([
@@ -186,543 +177,446 @@ async function refreshData() {
   }
 }
 
-function render() {
-  if (!state.token || !state.role) {
-    appRoot.innerHTML = renderLogin();
-    bindLoginEvents();
-    return;
-  }
-  const activeTab = getActiveTab();
-  const content = state.role === "paidan" ? renderPaidan(activeTab) : renderEngineer(activeTab);
-  appRoot.innerHTML = `${content}${renderOrderModal()}`;
-  bindAppEvents();
+function renderHeader(title, back = false) {
+  return `
+    <div class="mp-header">
+      ${back ? `<button class="header-back" type="button" data-back="1">返回</button>` : `<span class="header-back placeholder"></span>`}
+      <div class="header-title">${esc(title)}</div>
+      <button class="header-logout" type="button" data-logout="1">退出</button>
+    </div>
+  `;
+}
+
+function renderBottomNav(items, active) {
+  return `
+    <div class="bottom-nav">
+      ${items.map((item) => `
+        <button class="nav-item ${item.key === active ? "active" : ""}" type="button" data-nav="${item.key}">
+          <span class="nav-icon nav-icon-${esc(item.icon)}" aria-hidden="true"></span>
+          <span class="nav-text">${esc(item.text)}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderLogin() {
   return `
-    <div class="login-shell">
-      <div class="login-card">
+    <div class="login-container">
+      <div class="login-form-wrap">
         <div class="login-brand">
-          <div class="eyebrow">After-sales Service</div>
-          <h1>售后服务 Web 主体</h1>
-          <p class="subtle">浏览器和小程序共用一套页面能力，小程序只负责作为 web-view 壳承载入口。</p>
+          <div class="login-logo">售</div>
+          <div class="login-title">售后服务平台</div>
+          <div class="login-subtitle">一站式售后与维保服务系统</div>
         </div>
         <form id="login-form">
-          <div class="role-switch">
-            <button class="chip active" type="button" data-role-switch="paidan">派单员</button>
-            <button class="chip" type="button" data-role-switch="engineer">工程师</button>
+          <div class="role-selector">
+            <button class="role-option active" type="button" data-role="paidan">派单</button>
+            <button class="role-option" type="button" data-role="engineer">售后工程师</button>
           </div>
           <input type="hidden" name="role" value="paidan">
-          <div class="field">
-            <label>账号</label>
-            <input name="username" placeholder="输入登录账号" value="PD001">
+          <div class="input-group">
+            <label class="input-label">账号 / 手机号</label>
+            <div class="input-box">
+              <input name="username" value="PD001" placeholder="请输入手机号/工号">
+            </div>
           </div>
-          <div class="field">
-            <label>密码</label>
-            <input name="password" type="password" placeholder="输入密码" value="123456">
+          <div class="input-group">
+            <label class="input-label">登录密码</label>
+            <div class="input-box">
+              <input type="password" name="password" value="123456" placeholder="请输入密码">
+            </div>
           </div>
-          <button class="primary-btn" type="submit">${state.pending ? "登录中..." : "登录并进入系统"}</button>
-          <p class="helper">演示账号：${demoAccounts.map((item) => `${item.label} ${item.username}/${item.password}`).join("；")}</p>
-          ${state.error ? `<div class="error-box">${escapeHtml(state.error)}</div>` : ""}
+          <button class="login-btn" type="submit">${state.loading ? "登录中" : "登录系统"}</button>
+          ${state.loginError ? `<div class="error-box">${esc(state.loginError)}</div>` : ""}
         </form>
       </div>
+      <div class="login-footer">© 2026 售后服务平台</div>
     </div>
   `;
 }
 
-function renderPaidan(activeTab) {
-  const stats = state.orderStats || {};
+function renderCreate() {
   return `
-    <div class="shell">
-      ${renderTopbar("售后服务平台", state.user?.name || state.user?.username || "派单员")}
-      <section class="hero">
-        <div>
-          <div class="eyebrow">Dispatch Center</div>
-          <h1>工单派发、履约追踪、人员管理合并到同一个 Web 主体</h1>
-          <p class="subtle">参考 CRM 小程序的形态，小程序端不再承载原生业务页面，而是只保留入口壳层。</p>
-        </div>
-        <div class="hero-side">
-          <div class="action-card">
-            <strong>当前未完工工单</strong>
-            <div class="stat-value">${stats.pending || 0}</div>
-            <p>状态覆盖待处理、已指派、处理中。</p>
+    ${renderHeader("创建与派发工单")}
+    <div class="container has-bottom-nav">
+      <div class="card">
+        <div class="card-title">创建工单</div>
+        <form id="create-order-form">
+          <div class="form-group">
+            <label class="form-label">报修企业 / 客户名称</label>
+            <input class="form-input" name="customer_name" placeholder="请输入企业或客户名称">
           </div>
-        </div>
-      </section>
-      <section class="section grid-3">
-        ${renderStatCard("待处理工单", stats.pending || 0)}
-        ${renderStatCard("累计完成", stats.completed || 0)}
-        ${renderStatCard("本月完成", stats.completed_this_month || 0)}
-      </section>
-      ${renderPaidanPage(activeTab)}
-      ${renderNav(paidanTabs, activeTab)}
-    </div>
-  `;
-}
-
-function renderEngineer(activeTab) {
-  return `
-    <div class="shell">
-      ${renderTopbar("工程师工作台", state.profile?.name || state.user?.name || "工程师")}
-      <section class="hero">
-        <div>
-          <div class="eyebrow">Field Service</div>
-          <h1>任务接收、维修上报、历史归档统一在线流转</h1>
-          <p class="subtle">工程师在浏览器或小程序里看到的是同一套交互，不再维护双份页面。</p>
-        </div>
-        <div class="hero-side">
-          <div class="action-card">
-            <strong>当前待处理任务</strong>
-            <div class="stat-value">${state.taskOrders.length}</div>
-            <p>点击任务即可打开详情或直接上报维修记录。</p>
+          <div class="form-group">
+            <label class="form-label">报修设备名称</label>
+            <input class="form-input" name="device_name" placeholder="例如：液压打包机">
           </div>
-        </div>
-      </section>
-      <section class="section grid-3">
-        ${renderStatCard("待处理", state.taskOrders.length)}
-        ${renderStatCard("历史完成", state.historyOrders.length)}
-        ${renderStatCard("最近完工时长", durationText(state.historyOrders[0]?.duration || 0))}
-      </section>
-      ${renderEngineerPage(activeTab)}
-      ${renderNav(engineerTabs, activeTab)}
-    </div>
-  `;
-}
-
-function renderTopbar(title, userName) {
-  return `
-    <div class="topbar">
-      <div>
-        <div class="brand">${title}</div>
-        <div class="subtle">统一入口：Web 应用 + 微信小程序壳</div>
-      </div>
-      <div class="topbar-meta">
-        <span class="mini-tag">${escapeHtml(state.role === "paidan" ? "派单员" : "工程师")}</span>
-        <span class="mini-tag">${escapeHtml(userName)}</span>
-        <button class="ghost-btn" type="button" data-action="logout">退出登录</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderStatCard(label, value) {
-  return `
-    <div class="stat-card">
-      <div class="stat-label">${escapeHtml(label)}</div>
-      <div class="stat-value">${escapeHtml(String(value))}</div>
-    </div>
-  `;
-}
-
-function renderPaidanPage(activeTab) {
-  if (activeTab === "orders") return renderOrdersSection(state.orders, true);
-  if (activeTab === "engineers") return renderEngineersSection();
-  if (activeTab === "mine") return renderPaidanMine();
-  return renderCreateSection();
-}
-
-function renderEngineerPage(activeTab) {
-  if (activeTab === "working") return renderWorkingSection();
-  if (activeTab === "history") return renderHistorySection();
-  if (activeTab === "mine") return renderEngineerMine();
-  return renderTasksSection();
-}
-
-function renderCreateSection() {
-  const engineerOptions = state.engineers
-    .map((item) => `<option value="${item.id}">${escapeHtml(item.name)} - ${escapeHtml(item.department || "")}</option>`)
-    .join("");
-  return `
-    <section class="section">
-      <div class="section-title"><h2>创建并派发工单</h2></div>
-      <div class="form-card">
-        <form id="create-order-form" class="form-grid">
-          ${renderInput("customer_name", "客户名称")}
-          ${renderInput("device_name", "设备名称")}
-          ${renderInput("sn_code", "设备 SN")}
-          ${renderInput("address", "服务地址")}
-          <div class="field">
-            <label>故障类型</label>
-            <select name="fault_type">${faultTypes.map((item) => `<option value="${item}">${escapeHtml(item)}</option>`).join("")}</select>
+          <div class="form-group">
+            <label class="form-label">设备序列号 / SN码（选填）</label>
+            <input class="form-input" name="sn_code" placeholder="请输入设备铭牌上的SN编码">
           </div>
-          <div class="field">
-            <label>指派工程师</label>
-            <select name="engineer_id">${engineerOptions}</select>
+          <div class="form-group">
+            <label class="form-label">服务地址</label>
+            <input class="form-input" name="address" placeholder="如：上海市闵行区工业园X区X号厂房">
           </div>
-          <div class="field form-span-2">
-            <label>故障描述</label>
-            <textarea name="fault_desc" placeholder="输入故障现象、客户诉求、现场背景"></textarea>
+          <div class="form-group">
+            <label class="form-label">故障类型</label>
+            <select class="form-select" name="fault_type">
+              ${faultTypes.map((item) => `<option value="${esc(item)}">${esc(item)}</option>`).join("")}
+            </select>
           </div>
-          <div class="form-actions form-span-2">
-            <button class="primary-btn" type="submit">创建工单</button>
+          <div class="form-group">
+            <label class="form-label">指派服务工程师</label>
+            <select class="form-select" name="engineer_id">
+              ${state.engineers.map((item) => `<option value="${item.id}">${esc(item.name)} - ${esc(item.department || "")}</option>`).join("")}
+            </select>
           </div>
+          <div class="form-group">
+            <label class="form-label">故障现象描述</label>
+            <textarea class="form-textarea" name="fault_desc" placeholder="描述设备具体故障现象，如异响、报码、泄漏位置等"></textarea>
+          </div>
+          <button class="btn btn-success" type="submit">创建并派发工单</button>
         </form>
       </div>
-    </section>
+      ${renderBottomNav(paidanTabs, "create")}
+    </div>
   `;
 }
 
-function renderOrdersSection(orders, includeHeader) {
-  const rows = orders.length
-    ? orders.map((order) => {
-        const meta = statusMeta(order.status);
+function renderOrders() {
+  return `
+    ${renderHeader("工单看板")}
+    <div class="container has-bottom-nav">
+      <div class="grid-3">
+        <div class="stat-box"><div class="stat-num stat-warn">${esc(state.orderStats.pending || 0)}</div><div class="stat-desc">待处理</div></div>
+        <div class="stat-box"><div class="stat-num stat-primary">${esc(state.orderStats.completed || 0)}</div><div class="stat-desc">已完成</div></div>
+        <div class="stat-box"><div class="stat-num stat-success">${esc(state.orderStats.completed_this_month || 0)}</div><div class="stat-desc">本月已完成</div></div>
+      </div>
+      <div class="card-title loose-title">全员工单列表</div>
+      ${state.orders.length ? state.orders.map((item) => {
+        const meta = statusMeta(item.status);
         return `
-          <div class="table-row clickable" data-order-id="${order.id}">
-            <div><strong>${escapeHtml(order.order_no)}</strong><div class="subtle">${escapeHtml(order.customer_name)}</div></div>
-            <div>${escapeHtml(order.device_name)}</div>
-            <div>${escapeHtml(order.engineer_name || "-")}</div>
-            <div><span class="badge ${meta.className}">${meta.text}</span></div>
-            <div>${formatDate(order.created_at)}</div>
-          </div>
+          <button class="card clickable-card as-block" type="button" data-detail="${item.id}">
+            <div class="card-title">
+              工单: ${esc(item.order_no)}
+              <span class="badge ${meta.cls}">${esc(meta.text)}</span>
+            </div>
+            <div class="info-row"><span class="info-label">责任工程师</span><span class="info-val"><strong>${esc(item.engineer_name || "-")}</strong> (${esc(item.engineer_phone || "-")})</span></div>
+            <div class="info-row"><span class="info-label">服务客户:</span><span class="info-val">${esc(item.customer_name)}</span></div>
+            <div class="info-row"><span class="info-label">报修内容:</span><span class="info-val">${esc(item.fault_desc)}</span></div>
+          </button>
         `;
-      }).join("")
-    : `<div class="empty">暂无工单</div>`;
-  return `
-    <section class="section">
-      ${includeHeader ? `<div class="section-title"><h2>工单总览</h2></div>` : ""}
-      <div class="table-card">
-        <div class="table-head">
-          <span>工单</span>
-          <span>设备</span>
-          <span>工程师</span>
-          <span>状态</span>
-          <span>创建时间</span>
-        </div>
-        ${rows}
-      </div>
-    </section>
+      }).join("") : `<div class="empty-tip">暂无工单数据</div>`}
+      ${renderBottomNav(paidanTabs, "orders")}
+    </div>
   `;
 }
 
-function renderEngineersSection() {
-  const rows = state.engineers.length
-    ? state.engineers.map((engineer) => `
-        <div class="record-card">
-          <div class="record-title">
-            <strong>${escapeHtml(engineer.name)}</strong>
-            <div class="form-actions">
-              <button class="secondary-btn" type="button" data-edit-engineer="${engineer.id}">编辑</button>
-              <button class="danger-btn" type="button" data-delete-engineer="${engineer.id}">删除</button>
-            </div>
-          </div>
-          <div class="tile-meta">${escapeHtml(engineer.department || "-")} / ${escapeHtml(engineer.specialty || "未填写专长")}</div>
-          <div class="helper">手机号：${escapeHtml(engineer.phone || "-")}｜登录账号：${escapeHtml(engineer.login_username || "自动生成")}</div>
-        </div>
-      `).join("")
-    : `<div class="empty">暂无工程师</div>`;
+function renderEngineers() {
   return `
-    <section class="section">
-      <div class="section-title"><h2>工程师管理</h2></div>
-      <div class="grid-2">
-        <div class="table-card">${rows}</div>
-        <div class="form-card">
-          <form id="engineer-form" class="form-grid">
-            <input type="hidden" name="engineer_id" value="">
-            ${renderInput("name", "姓名")}
-            ${renderInput("phone", "手机号")}
-            ${renderInput("department", "部门")}
-            ${renderInput("specialty", "专长")}
-            <div class="form-actions form-span-2">
-              <button class="primary-btn" type="submit">保存工程师</button>
-              <button class="ghost-btn" type="button" data-action="reset-engineer-form">清空</button>
-            </div>
-          </form>
-          <p class="helper">新增工程师时后端会自动生成登录账号和默认密码。</p>
-        </div>
+    ${renderHeader("工程师管理")}
+    <div class="container has-bottom-nav">
+      <div class="card">
+        <div class="card-title">新增 / 编辑工程师</div>
+        <form id="engineer-form">
+          <input type="hidden" name="engineer_id" value="">
+          <div class="form-group"><label class="form-label">姓名</label><input class="form-input" name="name" placeholder="请输入工程师姓名"></div>
+          <div class="form-group"><label class="form-label">手机号</label><input class="form-input" name="phone" placeholder="请输入手机号"></div>
+          <div class="form-group"><label class="form-label">所属部门</label><input class="form-input" name="department" placeholder="请输入部门"></div>
+          <div class="form-group"><label class="form-label">技术专长</label><input class="form-input" name="specialty" placeholder="请输入技术专长"></div>
+          <button class="btn" type="submit">保存工程师</button>
+        </form>
       </div>
-    </section>
+      ${state.engineers.map((item) => `
+        <div class="card">
+          <div class="card-title">${esc(item.name)}</div>
+          <div class="info-row"><span class="info-label">手机号:</span><span class="info-val">${esc(item.phone || "-")}</span></div>
+          <div class="info-row"><span class="info-label">部门:</span><span class="info-val">${esc(item.department || "-")}</span></div>
+          <div class="info-row"><span class="info-label">专长:</span><span class="info-val">${esc(item.specialty || "-")}</span></div>
+          <div class="info-row"><span class="info-label">账号:</span><span class="info-val">${esc(item.login_username || "-")}</span></div>
+          <div class="btn-row">
+            <button class="btn btn-outline half-btn" type="button" data-edit-engineer="${item.id}">编辑</button>
+            <button class="btn btn-danger half-btn" type="button" data-delete-engineer="${item.id}">删除</button>
+          </div>
+        </div>
+      `).join("")}
+      ${renderBottomNav(paidanTabs, "engineers")}
+    </div>
   `;
 }
 
 function renderPaidanMine() {
   return `
-    <section class="section">
-      <div class="section-title"><h2>账号信息</h2></div>
-      <div class="grid-2">
-        <div class="meta-box"><strong>姓名</strong>${escapeHtml(state.user?.name || "-")}</div>
-        <div class="meta-box"><strong>账号</strong>${escapeHtml(state.user?.username || "-")}</div>
-        <div class="meta-box"><strong>角色</strong>派单员</div>
-        <div class="meta-box"><strong>电话</strong>${escapeHtml(state.user?.phone || "-")}</div>
+    ${renderHeader("我的")}
+    <div class="container has-bottom-nav">
+      <div class="card">
+        <div class="card-title">账号信息</div>
+        <div class="info-row"><span class="info-label">姓名:</span><span class="info-val">${esc(state.user?.name || "-")}</span></div>
+        <div class="info-row"><span class="info-label">账号:</span><span class="info-val">${esc(state.user?.username || "-")}</span></div>
+        <div class="info-row"><span class="info-label">电话:</span><span class="info-val">${esc(state.user?.phone || "-")}</span></div>
+        <div class="info-row"><span class="info-label">角色:</span><span class="info-val">派单员</span></div>
       </div>
-    </section>
+      ${renderBottomNav(paidanTabs, "mine")}
+    </div>
   `;
 }
 
-function renderTasksSection() {
-  const rows = state.taskOrders.length
-    ? state.taskOrders.map((order) => `
-        <div class="tile">
-          <div class="record-title">
-            <strong>${escapeHtml(order.order_no)}</strong>
-            <span class="badge ${statusMeta(order.status).className}">${statusMeta(order.status).text}</span>
-          </div>
-          <div class="tile-title">${escapeHtml(order.customer_name)} / ${escapeHtml(order.device_name)}</div>
-          <div class="tile-meta">${escapeHtml(order.address || "未填写服务地址")}</div>
-          <div class="helper">故障：${escapeHtml(order.fault_type)}｜${escapeHtml(order.fault_desc)}</div>
-          <div class="form-actions">
-            <button class="secondary-btn" type="button" data-order-id="${order.id}">查看详情</button>
-            <button class="primary-btn" type="button" data-open-working="${order.id}">填写维修记录</button>
-          </div>
-        </div>
-      `).join("")
-    : `<div class="empty">当前没有待处理任务</div>`;
-  return `<section class="section"><div class="section-title"><h2>待处理任务</h2></div><div class="grid-2">${rows}</div></section>`;
-}
-
-function renderWorkingSection() {
-  const options = state.taskOrders
-    .map((order) => `<option value="${order.id}">${escapeHtml(order.order_no)} - ${escapeHtml(order.customer_name)}</option>`)
-    .join("");
+function renderTasks() {
   return `
-    <section class="section">
-      <div class="section-title"><h2>维修记录提交</h2></div>
-      <div class="grid-2">
-        <div class="table-card">
-          <p class="subtle">选择任务后提交开始/结束时间、现场分析和图片，后端会把这次维修记录归档到工单详情中。</p>
-          ${renderOrdersSection(state.taskOrders, false)}
-        </div>
-        <div class="form-card">
-          <form id="work-record-form" class="form-grid">
-            <div class="field form-span-2">
-              <label>任务</label>
-              <select name="order_id">${options}</select>
-            </div>
-            ${renderInput("check_in_location", "签到位置")}
-            ${renderInput("start_time", "开始时间", currentDateTime())}
-            ${renderInput("end_time", "结束时间", currentDateTime())}
-            <div class="field form-span-2">
-              <label>维修分析</label>
-              <textarea name="analysis" placeholder="输入故障分析、维修动作、结果确认"></textarea>
-            </div>
-            <div class="field form-span-2">
-              <label>现场图片</label>
-              <input type="file" name="images" accept="image/png,image/jpeg,image/webp" multiple>
-            </div>
-            <div class="form-actions form-span-2">
-              <button class="primary-btn" type="submit">提交记录</button>
-            </div>
-          </form>
-        </div>
+    ${renderHeader("我的任务")}
+    <div class="container has-bottom-nav">
+      <div class="card blue-card">
+        <div class="mini-white-text">今日待执行任务</div>
+        <div class="big-white-text">${esc(state.taskOrders.length)} 单待处理</div>
       </div>
-    </section>
+      ${state.taskOrders.length ? state.taskOrders.map((item) => `
+        <button class="card clickable-card as-block" type="button" data-working="${item.id}">
+          <div class="card-title">工单: ${esc(item.order_no)} <span class="badge badge-pending">待维修</span></div>
+          <div class="info-row"><span class="info-label">客户名称:</span><span class="info-val">${esc(item.customer_name)}</span></div>
+          <div class="info-row"><span class="info-label">服务地址:</span><span class="info-val">${esc(item.address || "-")}</span></div>
+          <div class="info-row"><span class="info-label">报修问题:</span><span class="info-val">${esc(item.fault_desc)}</span></div>
+        </button>
+      `).join("") : `<div class="empty-tip">暂无待处理任务</div>`}
+      ${renderBottomNav(engineerTabs, "tasks")}
+    </div>
   `;
 }
 
-function renderHistorySection() {
-  const rows = state.historyOrders.length
-    ? state.historyOrders.map((order) => `
-        <div class="record-card">
-          <div class="record-title">
-            <strong>${escapeHtml(order.order_no)}</strong>
-            <span class="badge done">已完成</span>
-          </div>
-          <div class="tile-meta">${escapeHtml(order.customer_name)} / ${escapeHtml(order.device_name)}</div>
-          <div class="helper">维修时长：${escapeHtml(durationText(order.duration || 0))}｜完成时间：${formatDate(order.updated_at)}</div>
-          <div class="form-actions">
-            <button class="secondary-btn" type="button" data-order-id="${order.id}">查看详情</button>
-          </div>
-        </div>
-      `).join("")
-    : `<div class="empty">暂无历史记录</div>`;
-  return `<section class="section"><div class="section-title"><h2>历史完成工单</h2></div><div class="table-card">${rows}</div></section>`;
+function renderWorking() {
+  const selected = state.detailOrder || state.taskOrders[0] || {};
+  const meta = statusMeta(selected.status || "pending");
+  return `
+    ${renderHeader("现场维修", true)}
+    <div class="container">
+      <div class="card">
+        <div class="card-title"><span>工单: ${esc(selected.order_no || "...")}</span><span class="badge ${meta.cls}">${esc(meta.text)}</span></div>
+        <div class="info-row"><span class="info-label">客户:</span><span class="info-val">${esc(selected.customer_name || "-")}</span></div>
+        <div class="info-row"><span class="info-label">设备:</span><span class="info-val">${esc(selected.device_name || "-")}${selected.sn_code ? ` / SN: ${esc(selected.sn_code)}` : ""}</span></div>
+        <div class="info-row"><span class="info-label">服务地址:</span><span class="info-val blue-text">${esc(selected.address || "未填写")}</span></div>
+        <div class="info-row"><span class="info-label">故障类型:</span><span class="info-val">${esc(selected.fault_type || "-")}</span></div>
+        <div class="info-row"><span class="info-label">故障描述:</span><span class="info-val">${esc(selected.fault_desc || "-")}</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">现场维修打卡与记录</div>
+        <form id="work-record-form">
+          <input type="hidden" name="order_id" value="${esc(selected.id || "")}">
+          <div class="form-group"><label class="form-label">维修开始时间</label><input class="form-input" name="start_time" value="${esc(nowLocalDateTime())}"></div>
+          <div class="form-group"><label class="form-label">维修结束时间</label><input class="form-input" name="end_time" value="${esc(nowLocalDateTime())}"></div>
+          <div class="form-group"><label class="form-label">签到位置</label><input class="form-input" name="check_in_location" placeholder="请输入现场位置"></div>
+          <div class="form-group"><label class="form-label">故障原因分析与处理方案</label><textarea class="form-textarea" name="analysis" placeholder="填写现场排查出的具体故障原因及处理过程"></textarea></div>
+          <div class="form-group"><label class="form-label">维修后运行凭证（照片）</label><input class="form-input file-input" type="file" name="images" accept="image/png,image/jpeg,image/webp" multiple></div>
+          <button class="btn btn-success" type="submit">提交维修记录</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderHistory() {
+  return `
+    ${renderHeader("历史记录")}
+    <div class="container has-bottom-nav">
+      ${state.historyOrders.length ? state.historyOrders.map((item) => `
+        <button class="card clickable-card as-block" type="button" data-detail="${item.id}">
+          <div class="card-title">工单: ${esc(item.order_no)} <span class="badge badge-done">已完成</span></div>
+          <div class="info-row"><span class="info-label">客户名称:</span><span class="info-val">${esc(item.customer_name)}</span></div>
+          <div class="info-row"><span class="info-label">设备名称:</span><span class="info-val">${esc(item.device_name)}</span></div>
+          <div class="info-row"><span class="info-label">维修时长:</span><span class="info-val">${esc(durationText(item.duration || 0))}</span></div>
+        </button>
+      `).join("") : `<div class="empty-tip">暂无历史记录</div>`}
+      ${renderBottomNav(engineerTabs, "history")}
+    </div>
+  `;
 }
 
 function renderEngineerMine() {
-  const profile = state.profile || {};
+  const p = state.profile || {};
   return `
-    <section class="section">
-      <div class="section-title"><h2>个人信息</h2></div>
-      <div class="grid-2">
-        <div class="meta-box"><strong>姓名</strong>${escapeHtml(profile.name || "-")}</div>
-        <div class="meta-box"><strong>账号</strong>${escapeHtml(profile.login_username || state.user?.username || "-")}</div>
-        <div class="meta-box"><strong>电话</strong>${escapeHtml(profile.phone || "-")}</div>
-        <div class="meta-box"><strong>部门</strong>${escapeHtml(profile.department || "-")}</div>
-        <div class="meta-box"><strong>专长</strong>${escapeHtml(profile.specialty || "-")}</div>
-        <div class="meta-box"><strong>状态</strong>${escapeHtml(profile.status || "active")}</div>
+    ${renderHeader("我的")}
+    <div class="container has-bottom-nav">
+      <div class="card">
+        <div class="card-title">个人信息</div>
+        <div class="info-row"><span class="info-label">姓名:</span><span class="info-val">${esc(p.name || "-")}</span></div>
+        <div class="info-row"><span class="info-label">账号:</span><span class="info-val">${esc(p.login_username || state.user?.username || "-")}</span></div>
+        <div class="info-row"><span class="info-label">电话:</span><span class="info-val">${esc(p.phone || "-")}</span></div>
+        <div class="info-row"><span class="info-label">部门:</span><span class="info-val">${esc(p.department || "-")}</span></div>
+        <div class="info-row"><span class="info-label">专长:</span><span class="info-val">${esc(p.specialty || "-")}</span></div>
       </div>
-    </section>
+      ${renderBottomNav(engineerTabs, "mine")}
+    </div>
   `;
 }
 
-function renderNav(tabs, activeTab) {
-  return `
-    <nav class="bottom-nav">
-      ${tabs.map((tab) => `
-        <button class="nav-item ${tab.key === activeTab ? "active" : ""}" type="button" data-nav="${tab.key}">
-          ${escapeHtml(tab.label)}
-        </button>
-      `).join("")}
-    </nav>
-  `;
+function buildTimeline(order) {
+  const items = [];
+  items.push({ title: "提交报修申请", time: formatTime(order.created_at), desc: `${order.customer_name} 提交 ${order.device_name} 故障报修`, cls: "done" });
+  items.push({ title: "派单确认", time: formatTime(order.created_at), desc: `指派给工程师 ${order.engineer_name || "-"}`, cls: "done" });
+  (order.records || []).forEach((record, index) => {
+    items.push({
+      title: index === order.records.length - 1 && order.status === "done" ? "完工验收与确认" : "现场维修",
+      time: record.end_time || record.start_time || "-",
+      desc: record.analysis || "已提交维修记录",
+      cls: order.status === "done" ? "done" : "active",
+    });
+  });
+  if (!order.records?.length) {
+    items.push({ title: "现场维修", time: "待开始", desc: "等待工程师到场", cls: "" });
+  }
+  return items;
 }
 
-function renderOrderModal() {
-  const order = getModalOrder();
+function renderDetail() {
+  const order = state.detailOrder;
   if (!order) return "";
-  const meta = statusMeta(order.status);
-  const records = order.records || [];
-  const images = records.flatMap((record) => (record.images || []).map(normalizeImage));
+  const images = (order.records || []).flatMap((record) => (record.images || []).map((src) => /^https?:\/\//.test(src) ? src : `${apiBase()}${src}`));
+  const timeline = buildTimeline(order);
   return `
-    <div class="modal" data-close-modal="true">
-      <div class="modal-card">
-        <div class="modal-head">
-          <h3>${escapeHtml(order.order_no)} / ${escapeHtml(order.customer_name)}</h3>
-          <button class="ghost-btn" type="button" data-action="close-modal">关闭</button>
-        </div>
-        <div class="modal-grid">
-          <div class="meta-box"><strong>设备</strong>${escapeHtml(order.device_name)}</div>
-          <div class="meta-box"><strong>状态</strong><span class="badge ${meta.className}">${meta.text}</span></div>
-          <div class="meta-box"><strong>工程师</strong>${escapeHtml(order.engineer_name || "-")}</div>
-          <div class="meta-box"><strong>地址</strong>${escapeHtml(order.address || "-")}</div>
-          <div class="meta-box"><strong>故障类型</strong>${escapeHtml(order.fault_type || "-")}</div>
-          <div class="meta-box"><strong>维修时长</strong>${escapeHtml(durationText(order.duration || 0))}</div>
-        </div>
-        <div class="timeline-card">
-          <div class="section-title"><h2>维修记录</h2></div>
-          <div class="timeline">
-            <div class="timeline-item">
-              <div class="timeline-dot done"></div>
-              <div class="timeline-content">
-                <strong>工单创建</strong>
-                <div class="subtle">${formatDate(order.created_at)}</div>
-                <div>${escapeHtml(order.fault_desc || "-")}</div>
-              </div>
-            </div>
-            ${records.length ? records.map((record) => `
-              <div class="timeline-item">
-                <div class="timeline-dot ${order.status === "done" ? "done" : "active"}"></div>
-                <div class="timeline-content">
-                  <strong>${escapeHtml(record.start_time || "-")} 至 ${escapeHtml(record.end_time || "-")}</strong>
-                  <div class="subtle">${escapeHtml(record.check_in_location || "未填写签到位置")}</div>
-                  <div>${escapeHtml(record.analysis || "-")}</div>
-                </div>
-              </div>
-            `).join("") : `
-              <div class="timeline-item">
-                <div class="timeline-dot"></div>
-                <div class="timeline-content">暂无维修记录</div>
-              </div>
-            `}
-          </div>
-        </div>
-        ${images.length ? `<div class="section"><div class="section-title"><h2>现场图片</h2></div><div class="photo-grid">${images.map((src) => `<img src="${src}" alt="现场图片">`).join("")}</div></div>` : ""}
+    ${renderHeader("工单详情", true)}
+    <div class="container">
+      <div class="card">
+        <div class="card-title">工单信息</div>
+        <div class="info-row"><span class="info-label">工单编号:</span><span class="info-val strong-text">${esc(order.order_no)}</span></div>
+        <div class="info-row"><span class="info-label">工单状态:</span><span class="info-val blue-text strong-text">${esc(statusMeta(order.status).text)}</span></div>
+        <div class="info-row"><span class="info-label">客户名称:</span><span class="info-val">${esc(order.customer_name)}</span></div>
+        <div class="info-row"><span class="info-label">设备名称:</span><span class="info-val">${esc(order.device_name)}</span></div>
+        <div class="info-row"><span class="info-label">SN码:</span><span class="info-val">${esc(order.sn_code || "-")}</span></div>
+        <div class="info-row"><span class="info-label">故障类型:</span><span class="info-val">${esc(order.fault_type)}</span></div>
+        <div class="info-row"><span class="info-label">故障描述:</span><span class="info-val">${esc(order.fault_desc)}</span></div>
+        <div class="info-row"><span class="info-label">责任工程师:</span><span class="info-val">${esc(order.engineer_name || "-")} ${esc(order.engineer_phone || "")}</span></div>
       </div>
+      <div class="card">
+        <div class="card-title">维修进度</div>
+        <div class="timeline">
+          ${timeline.map((item) => `
+            <div class="timeline-item ${item.cls}">
+              <div class="timeline-dot"></div>
+              <div class="timeline-title"><span>${esc(item.title)}</span><span class="timeline-time">${esc(item.time)}</span></div>
+              <div class="timeline-desc">${esc(item.desc)}</div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+      ${images.length ? `<div class="card"><div class="card-title">维修图片</div><div class="image-list">${images.map((src) => `<img src="${src}" class="record-image" alt="维修图片">`).join("")}</div></div>` : ""}
     </div>
   `;
 }
 
-function renderInput(name, label, value = "") {
-  return `
-    <div class="field">
-      <label>${escapeHtml(label)}</label>
-      <input name="${name}" value="${escapeHtml(value)}" placeholder="请输入${escapeHtml(label)}">
-    </div>
-  `;
+function renderApp() {
+  if (!state.token || !state.role) return renderLogin();
+  const tab = currentTab();
+  if (tab === "detail") return renderDetail();
+  if (state.role === "paidan") {
+    if (tab === "orders") return renderOrders();
+    if (tab === "engineers") return renderEngineers();
+    if (tab === "mine") return renderPaidanMine();
+    return renderCreate();
+  }
+  if (tab === "working") return renderWorking();
+  if (tab === "history") return renderHistory();
+  if (tab === "mine") return renderEngineerMine();
+  return renderTasks();
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function render() {
+  root.innerHTML = renderApp();
+  bindEvents();
 }
 
-function bindLoginEvents() {
-  const form = document.getElementById("login-form");
-  const buttons = Array.from(document.querySelectorAll("[data-role-switch]"));
-  buttons.forEach((button) => {
+function bindEvents() {
+  document.querySelectorAll("[data-role]").forEach((button) => {
     button.addEventListener("click", () => {
-      buttons.forEach((item) => item.classList.toggle("active", item === button));
-      form.role.value = button.dataset.roleSwitch;
-      const account = demoAccounts.find((item) => item.role === button.dataset.roleSwitch);
-      if (account) {
-        form.username.value = account.username;
-        form.password.value = account.password;
+      const form = document.getElementById("login-form");
+      document.querySelectorAll("[data-role]").forEach((item) => item.classList.toggle("active", item === button));
+      form.role.value = button.dataset.role;
+      form.username.value = button.dataset.role === "paidan" ? "PD001" : "SH001";
+      form.password.value = "123456";
+    });
+  });
+
+  const loginForm = document.getElementById("login-form");
+  if (loginForm) {
+    loginForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      state.loading = true;
+      state.loginError = "";
+      render();
+      try {
+        const payload = await api("/auth/login", {
+          method: "POST",
+          body: {
+            username: loginForm.username.value.trim(),
+            password: loginForm.password.value,
+            role: loginForm.role.value,
+          },
+        });
+        saveSession(payload);
+        await refreshAll();
+        setRoute(payload.role === "paidan" ? "create" : "tasks");
+      } catch (error) {
+        state.loading = false;
+        state.loginError = error.message;
+        render();
       }
     });
-  });
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    state.pending = true;
-    state.error = "";
-    render();
-    try {
-      const payload = await api("/auth/login", {
-        method: "POST",
-        body: {
-          username: form.username.value.trim(),
-          password: form.password.value,
-          role: form.role.value,
-        },
-      });
-      saveSession(payload);
-      await refreshData();
-      setHash(payload.role === "paidan" ? "create" : "tasks");
-    } catch (error) {
-      state.error = error.message;
-      state.pending = false;
-      render();
-    }
-  });
-}
+  }
 
-function bindAppEvents() {
   document.querySelectorAll("[data-nav]").forEach((button) => {
-    button.addEventListener("click", () => setHash(button.dataset.nav));
-  });
-  document.querySelectorAll("[data-order-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      state.modalOrderId = Number(button.dataset.orderId);
-      render();
+      state.detailOrder = null;
+      setRoute(button.dataset.nav);
     });
   });
-  document.querySelectorAll("[data-open-working]").forEach((button) => {
-    button.addEventListener("click", () => {
-      setHash("working");
-      setTimeout(() => {
-        const select = document.querySelector('select[name="order_id"]');
-        if (select) select.value = button.dataset.openWorking;
-      }, 0);
+
+  document.querySelectorAll("[data-detail]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = Number(button.dataset.detail);
+      state.detailOrder = await api(`/workorders/${id}`);
+      setRoute("detail");
     });
   });
+
+  document.querySelectorAll("[data-working]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = Number(button.dataset.working);
+      state.detailOrder = await api(`/workorders/${id}`);
+      setRoute("working");
+    });
+  });
+
   document.querySelectorAll("[data-edit-engineer]").forEach((button) => {
-    button.addEventListener("click", () => fillEngineerForm(Number(button.dataset.editEngineer)));
+    button.addEventListener("click", () => {
+      const item = state.engineers.find((eng) => eng.id === Number(button.dataset.editEngineer));
+      const form = document.getElementById("engineer-form");
+      if (!item || !form) return;
+      form.engineer_id.value = item.id;
+      form.name.value = item.name || "";
+      form.phone.value = item.phone || "";
+      form.department.value = item.department || "";
+      form.specialty.value = item.specialty || "";
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
   });
+
   document.querySelectorAll("[data-delete-engineer]").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (!window.confirm("确认删除该工程师及其登录账号？")) return;
-      try {
-        await api(`/engineers/${button.dataset.deleteEngineer}`, { method: "DELETE" });
-        await refreshData();
-        render();
-      } catch (error) {
-        alert(error.message);
-      }
-    });
-  });
-  document.querySelectorAll('[data-action="logout"]').forEach((button) => {
-    button.addEventListener("click", clearSession);
-  });
-  document.querySelectorAll('[data-action="close-modal"]').forEach((button) => {
-    button.addEventListener("click", () => {
-      state.modalOrderId = null;
+      if (!window.confirm("确认删除该工程师吗？")) return;
+      await api(`/engineers/${button.dataset.deleteEngineer}`, { method: "DELETE" });
+      await refreshAll();
       render();
     });
   });
-  document.querySelectorAll('[data-close-modal="true"]').forEach((overlay) => {
-    overlay.addEventListener("click", (event) => {
-      if (event.target === overlay) {
-        state.modalOrderId = null;
-        render();
-      }
-    });
+
+  document.querySelectorAll("[data-logout]").forEach((button) => {
+    button.addEventListener("click", clearSession);
   });
-  document.querySelectorAll('[data-action="reset-engineer-form"]').forEach((button) => {
+
+  document.querySelectorAll("[data-back]").forEach((button) => {
     button.addEventListener("click", () => {
-      const form = document.getElementById("engineer-form");
-      if (form) form.reset();
+      if (state.role === "paidan") {
+        setRoute("orders");
+      } else {
+        setRoute("tasks");
+      }
     });
   });
 
@@ -731,25 +625,20 @@ function bindAppEvents() {
     createOrderForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = new FormData(createOrderForm);
-      try {
-        await api("/workorders", {
-          method: "POST",
-          body: {
-            customer_name: formData.get("customer_name"),
-            device_name: formData.get("device_name"),
-            sn_code: formData.get("sn_code"),
-            address: formData.get("address"),
-            fault_type: formData.get("fault_type"),
-            fault_desc: formData.get("fault_desc"),
-            engineer_id: Number(formData.get("engineer_id")),
-          },
-        });
-        createOrderForm.reset();
-        await refreshData();
-        setHash("orders");
-      } catch (error) {
-        alert(error.message);
-      }
+      await api("/workorders", {
+        method: "POST",
+        body: {
+          customer_name: formData.get("customer_name"),
+          device_name: formData.get("device_name"),
+          sn_code: formData.get("sn_code"),
+          address: formData.get("address"),
+          fault_type: formData.get("fault_type"),
+          fault_desc: formData.get("fault_desc"),
+          engineer_id: Number(formData.get("engineer_id")),
+        },
+      });
+      await refreshAll();
+      setRoute("orders");
     });
   }
 
@@ -764,18 +653,13 @@ function bindAppEvents() {
         department: formData.get("department"),
         specialty: formData.get("specialty"),
       };
-      try {
-        if (formData.get("engineer_id")) {
-          await api(`/engineers/${formData.get("engineer_id")}`, { method: "PUT", body: payload });
-        } else {
-          await api("/engineers", { method: "POST", body: payload });
-        }
-        engineerForm.reset();
-        await refreshData();
-        render();
-      } catch (error) {
-        alert(error.message);
+      if (formData.get("engineer_id")) {
+        await api(`/engineers/${formData.get("engineer_id")}`, { method: "PUT", body: payload });
+      } else {
+        await api("/engineers", { method: "POST", body: payload });
       }
+      await refreshAll();
+      render();
     });
   }
 
@@ -784,55 +668,34 @@ function bindAppEvents() {
     workRecordForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = new FormData(workRecordForm);
-      try {
-        const imageUrls = [];
-        const files = Array.from(workRecordForm.images.files || []);
-        for (const file of files) {
-          const uploadForm = new FormData();
-          uploadForm.append("file", file);
-          const uploaded = await api("/api/upload", { method: "POST", body: uploadForm });
-          imageUrls.push(uploaded.url);
-        }
-        await api(`/workorders/${Number(formData.get("order_id"))}/records`, {
-          method: "POST",
-          body: {
-            check_in_location: formData.get("check_in_location"),
-            start_time: formData.get("start_time"),
-            end_time: formData.get("end_time"),
-            analysis: formData.get("analysis"),
-            images: imageUrls,
-          },
-        });
-        await refreshData();
-        setHash("history");
-      } catch (error) {
-        alert(error.message);
+      const files = Array.from(workRecordForm.images.files || []);
+      const images = [];
+      for (const file of files) {
+        const uploadData = new FormData();
+        uploadData.append("file", file);
+        const result = await api("/api/upload", { method: "POST", body: uploadData });
+        images.push(result.url);
       }
+      await api(`/workorders/${formData.get("order_id")}/records`, {
+        method: "POST",
+        body: {
+          check_in_location: formData.get("check_in_location"),
+          start_time: formData.get("start_time"),
+          end_time: formData.get("end_time"),
+          analysis: formData.get("analysis"),
+          images,
+        },
+      });
+      await refreshAll();
+      setRoute("history");
     });
   }
-}
-
-function fillEngineerForm(engineerId) {
-  const engineer = state.engineers.find((item) => item.id === engineerId);
-  const form = document.getElementById("engineer-form");
-  if (!engineer || !form) return;
-  form.engineer_id.value = engineer.id;
-  form.name.value = engineer.name || "";
-  form.phone.value = engineer.phone || "";
-  form.department.value = engineer.department || "";
-  form.specialty.value = engineer.specialty || "";
 }
 
 window.addEventListener("hashchange", render);
 
 async function bootstrap() {
-  if (state.token && state.role) {
-    try {
-      await refreshData();
-    } catch (error) {
-      state.error = error.message;
-    }
-  }
+  if (state.token && state.role) await refreshAll();
   render();
 }
 
