@@ -323,6 +323,17 @@ function normalizeImage(src) {
   return `${apiBase()}${src}`;
 }
 
+async function uploadFiles(files) {
+  const images = [];
+  for (const file of Array.from(files || [])) {
+    const uploadData = new FormData();
+    uploadData.append("file", file);
+    const result = await api("/api/upload", { method: "POST", body: uploadData });
+    images.push(result.url);
+  }
+  return images;
+}
+
 function renderShell(content, activeTab, role, options = {}) {
   const tabs = role ? TAB_CONFIG[role] : [];
   return `
@@ -465,6 +476,15 @@ function renderCreate() {
         <div class="form-group">
           <label class="form-label">故障现象描述</label>
           <textarea class="form-textarea" name="fault_desc" placeholder="描述设备具体故障现象，如异响、报码、泄漏位置等">${esc(current?.fault_desc || "")}</textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">故障照片</label>
+          <input class="form-input file-input" type="file" name="fault_images" accept="image/png,image/jpeg,image/webp" multiple>
+          ${(current?.fault_images || []).length ? `
+            <div class="image-list compact-image-list">
+              ${current.fault_images.map((src) => `<img src="${normalizeImage(src)}" class="record-image" alt="故障照片">`).join("")}
+            </div>
+          ` : ""}
         </div>
         <div class="btn-row">
           <button class="btn btn-success ${current ? "half-btn" : ""}" type="submit">${current ? "保存工单" : "创建并派发工单"}</button>
@@ -748,6 +768,7 @@ function buildTimeline(order) {
 function renderDetail() {
   const order = state.detailOrder;
   if (!order) return "";
+  const faultImages = (order.fault_images || []).map(normalizeImage);
   const images = (order.records || []).flatMap((record) => (record.images || []).map(normalizeImage));
   const timeline = buildTimeline(order);
 
@@ -775,6 +796,14 @@ function renderDetail() {
         </div>
       ` : ""}
     </section>
+    ${faultImages.length ? `
+      <section class="card">
+        <div class="card-title">故障照片</div>
+        <div class="image-list">
+          ${faultImages.map((src) => `<img src="${src}" class="record-image" alt="故障照片">`).join("")}
+        </div>
+      </section>
+    ` : ""}
     <section class="card">
       <div class="card-title">维修进度</div>
       <div class="timeline">
@@ -979,6 +1008,9 @@ function bindEvents() {
     createOrderForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = new FormData(createOrderForm);
+      const orderId = formData.get("order_id");
+      const current = orderId ? editingOrder() : null;
+      const uploadedFaultImages = await uploadFiles(createOrderForm.fault_images.files);
       const payload = {
         customer_name: formData.get("customer_name"),
         device_name: formData.get("device_name"),
@@ -986,11 +1018,10 @@ function bindEvents() {
         address: joinAddress(formData),
         fault_type: formData.get("fault_type"),
         fault_desc: formData.get("fault_desc"),
+        fault_images: uploadedFaultImages.length ? uploadedFaultImages : current?.fault_images || [],
         engineer_id: Number(formData.get("engineer_id")),
       };
-      const orderId = formData.get("order_id");
       if (orderId) {
-        const current = editingOrder();
         await api(`/workorders/${orderId}`, {
           method: "PUT",
           body: { ...payload, status: current?.status || "assigned" },
@@ -1133,14 +1164,7 @@ function bindEvents() {
     workRecordForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const formData = new FormData(workRecordForm);
-      const files = Array.from(workRecordForm.images.files || []);
-      const images = [];
-      for (const file of files) {
-        const uploadData = new FormData();
-        uploadData.append("file", file);
-        const result = await api("/api/upload", { method: "POST", body: uploadData });
-        images.push(result.url);
-      }
+      const images = await uploadFiles(workRecordForm.images.files);
       await api(`/workorders/${formData.get("order_id")}/records`, {
         method: "POST",
         body: {

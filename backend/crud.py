@@ -110,6 +110,7 @@ def create_work_order(db: Session, data, created_by: int):
         address=data.address,
         fault_type=data.fault_type,
         fault_desc=data.fault_desc,
+        fault_images=json.dumps(data.fault_images or []),
         engineer_id=data.engineer_id,
         created_by=created_by,
         status="assigned"
@@ -135,6 +136,7 @@ def update_work_order(db: Session, order_id: int, data):
 
     for field in ("customer_name", "device_name", "sn_code", "address", "fault_type", "fault_desc", "engineer_id"):
         setattr(order, field, getattr(data, field))
+    order.fault_images = json.dumps(data.fault_images or [])
 
     if getattr(data, "status", None):
         order.status = data.status

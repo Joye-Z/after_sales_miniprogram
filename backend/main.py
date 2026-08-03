@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 import shutil
+from sqlalchemy import inspect, text
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -64,6 +65,19 @@ UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 WEB_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "web"))
 
 Base.metadata.create_all(bind=engine)
+
+
+def ensure_schema() -> None:
+    inspector = inspect(engine)
+    if "work_orders" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("work_orders")}
+    if "fault_images" not in columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE work_orders ADD COLUMN fault_images TEXT"))
+
+
+ensure_schema()
 
 app = FastAPI(title=APP_TITLE)
 
@@ -299,6 +313,7 @@ def enrich_order(order: WorkOrder) -> dict:
         "engineer_name": order.engineer.name if order.engineer else None,
         "engineer_phone": order.engineer.phone if order.engineer else None,
     }
+    data["fault_images"] = json.loads(order.fault_images) if order.fault_images else []
     for field in ("created_at", "updated_at"):
         value = data.get(field)
         if value is not None and value.tzinfo is None:

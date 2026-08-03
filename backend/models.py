@@ -44,6 +44,7 @@ class WorkOrder(Base):
     address = Column(String)
     fault_type = Column(String)
     fault_desc = Column(Text)
+    fault_images = Column(Text)  # JSON string of fault image URLs
     status = Column(String, default="pending")
     engineer_id = Column(Integer, ForeignKey("engineers.id"), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"))

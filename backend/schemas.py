@@ -60,6 +60,7 @@ class WorkOrderCreate(BaseModel):
     address: Optional[str] = None
     fault_type: str
     fault_desc: str
+    fault_images: Optional[List[str]] = []
     engineer_id: int
 
 
@@ -70,6 +71,7 @@ class WorkOrderUpdate(BaseModel):
     address: Optional[str] = None
     fault_type: str
     fault_desc: str
+    fault_images: Optional[List[str]] = []
     engineer_id: int
     status: Optional[str] = None
 
@@ -93,6 +95,7 @@ class WorkOrderOut(BaseModel):
     address: Optional[str] = None
     fault_type: str
     fault_desc: str
+    fault_images: Optional[List[str]] = []
     status: str
     engineer_id: Optional[int]
     engineer_name: Optional[str] = None
