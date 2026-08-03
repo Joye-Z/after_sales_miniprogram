@@ -11,6 +11,19 @@ def get_user_by_username(db: Session, username: str):
     return db.query(User).filter(User.username == username).first()
 
 
+def update_user_profile(db: Session, user: User, data):
+    user.name = data.name
+    user.phone = data.phone
+    if data.password:
+        user.password_hash = pwd_context.hash(data.password)
+    if user.engineer:
+        user.engineer.name = data.name
+        user.engineer.phone = data.phone
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 def generate_engineer_username(db: Session):
     existing = db.query(User.username).filter(User.username.like("SH%")).all()
     max_num = 0

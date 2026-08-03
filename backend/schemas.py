@@ -27,6 +27,12 @@ class LoginResponse(BaseModel):
     user: UserOut
 
 
+class UserUpdate(BaseModel):
+    name: str
+    phone: str
+    password: Optional[str] = None
+
+
 class EngineerCreate(BaseModel):
     name: str
     phone: str

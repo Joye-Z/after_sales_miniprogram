@@ -511,7 +511,7 @@ function renderEngineers() {
   return renderShell(`
     ${state.engineers.length ? state.engineers.map((item) => `
       <article class="card">
-        <div class="card-title"><span>${esc(item.name)}</span><span class="badge badge-processing">${esc(item.status || "active")}</span></div>
+        <div class="card-title"><span>${esc(item.name)}</span></div>
         <div class="info-row"><span class="info-label">手机号</span><span class="info-val">${esc(item.phone || "-")}</span></div>
         <div class="info-row"><span class="info-label">部门</span><span class="info-val">${esc(item.department || "-")}</span></div>
         <div class="info-row"><span class="info-label">专长</span><span class="info-val">${esc(item.specialty || "-")}</span></div>
@@ -554,13 +554,47 @@ function renderEngineerForm() {
 function renderMine() {
   return renderShell(`
     <section class="card">
-      <div class="card-title">账号信息</div>
+      <div class="card-title">
+        <span>账号信息</span>
+        <button class="mini-link-btn" type="button" data-edit-account="1">编辑</button>
+      </div>
       <div class="info-row"><span class="info-label">姓名</span><span class="info-val">${esc(state.user?.name || "-")}</span></div>
       <div class="info-row"><span class="info-label">账号</span><span class="info-val">${esc(state.user?.username || "-")}</span></div>
       <div class="info-row"><span class="info-label">电话</span><span class="info-val">${esc(state.user?.phone || "-")}</span></div>
       <div class="info-row"><span class="info-label">角色</span><span class="info-val">派单员</span></div>
     </section>
   `, "mine", "paidan", { title: "我的" });
+}
+
+function renderAccountForm() {
+  const profile = state.role === "engineer" ? state.profile || state.user || {} : state.user || {};
+  return renderShell(`
+    <section class="card">
+      <div class="card-title">编辑账号信息</div>
+      <form id="account-form">
+        <div class="form-group">
+          <label class="form-label">姓名</label>
+          <input class="form-input" name="name" value="${esc(profile.name || "")}" placeholder="请输入姓名">
+        </div>
+        <div class="form-group">
+          <label class="form-label">账号</label>
+          <input class="form-input" value="${esc(profile.login_username || profile.username || "")}" disabled>
+        </div>
+        <div class="form-group">
+          <label class="form-label">电话</label>
+          <input class="form-input" name="phone" value="${esc(profile.phone || "")}" placeholder="请输入联系电话">
+        </div>
+        <div class="form-group">
+          <label class="form-label">新密码</label>
+          <input class="form-input" type="password" name="password" placeholder="不修改请留空，至少 6 位">
+        </div>
+        <div class="btn-row">
+          <button class="btn half-btn" type="submit">保存</button>
+          <button class="btn btn-outline half-btn" type="button" data-cancel-account-edit="1">取消</button>
+        </div>
+      </form>
+    </section>
+  `, "mine", state.role, { title: "编辑账号", back: true, noBottomNav: true });
 }
 
 function renderTasks() {
@@ -661,7 +695,10 @@ function renderEngineerMine() {
   const profile = state.profile || {};
   return renderShell(`
     <section class="card">
-      <div class="card-title">个人信息</div>
+      <div class="card-title">
+        <span>个人信息</span>
+        <button class="mini-link-btn" type="button" data-edit-account="1">编辑</button>
+      </div>
       <div class="info-row"><span class="info-label">姓名</span><span class="info-val">${esc(profile.name || "-")}</span></div>
       <div class="info-row"><span class="info-label">账号</span><span class="info-val">${esc(profile.login_username || state.user?.username || "-")}</span></div>
       <div class="info-row"><span class="info-label">电话</span><span class="info-val">${esc(profile.phone || "-")}</span></div>
@@ -774,10 +811,12 @@ function renderApp() {
     if (tab === "orders") return renderOrders();
     if (tab === "engineers") return renderEngineers();
     if (tab === "engineer-form") return renderEngineerForm();
+    if (tab === "account-form") return renderAccountForm();
     if (tab === "mine") return renderMine();
     return renderCreate();
   }
 
+  if (tab === "account-form") return renderAccountForm();
   if (tab === "working") return renderWorking();
   if (tab === "history") return renderHistory();
   if (tab === "mine") return renderEngineerMine();
@@ -922,9 +961,15 @@ function bindEvents() {
       resetEngineerEditing();
       clearWorkingOrder();
       if (state.role === "paidan") {
-        setRoute(route() === "engineer-form" ? "engineers" : "orders");
+        if (route() === "engineer-form") {
+          setRoute("engineers");
+        } else if (route() === "account-form") {
+          setRoute("mine");
+        } else {
+          setRoute("orders");
+        }
       } else {
-        setRoute("tasks");
+        setRoute(route() === "account-form" ? "mine" : "tasks");
       }
     });
   });
@@ -988,6 +1033,39 @@ function bindEvents() {
       setRoute("engineers");
     });
   });
+
+  document.querySelectorAll("[data-edit-account]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setRoute("account-form");
+    });
+  });
+
+  document.querySelectorAll("[data-cancel-account-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setRoute("mine");
+    });
+  });
+
+  const accountForm = document.getElementById("account-form");
+  if (accountForm) {
+    accountForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(accountForm);
+      const password = String(formData.get("password") || "").trim();
+      const payload = {
+        name: String(formData.get("name") || "").trim(),
+        phone: String(formData.get("phone") || "").trim(),
+      };
+      if (password) payload.password = password;
+      const updatedUser = await api("/users/me", { method: "PUT", body: payload });
+      state.user = updatedUser;
+      localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(updatedUser));
+      if (state.role === "engineer") {
+        await refreshAll();
+      }
+      setRoute("mine");
+    });
+  }
 
   document.querySelectorAll("[data-use-location]").forEach((button) => {
     button.addEventListener("click", () => {

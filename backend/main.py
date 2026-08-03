@@ -27,6 +27,7 @@ from crud import (
     get_work_orders,
     get_work_orders_by_engineer,
     update_engineer,
+    update_user_profile,
     update_work_order,
     update_work_order_status,
 )
@@ -37,6 +38,8 @@ from schemas import (
     LoginRequest,
     LoginResponse,
     ReverseGeocodeRequest,
+    UserOut,
+    UserUpdate,
     WorkOrderCreate,
     WorkOrderList,
     WorkOrderOut,
@@ -203,6 +206,17 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         "role": user.role,
         "user": user,
     }
+
+
+@app.put("/users/me", response_model=UserOut)
+def edit_current_user(
+    data: UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if data.password is not None and len(data.password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少 6 位")
+    return update_user_profile(db, current_user, data)
 
 
 @app.get("/engineers")
